@@ -18,6 +18,7 @@ def extract_step_data(
     allow_padding: bool = False,
 ) -> VLAStepData:
     step_data = {}
+    # TODO: tmp hardcode
     episode_data["language.task"] =  ["put the fruits in the bag"] * len(episode_data)
 
     # Extract data for each configured modality

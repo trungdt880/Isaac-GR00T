@@ -137,7 +137,8 @@ class Gr00tPolicy(BasePolicy):
             images=observation["video"],
             states=observation["state"],
             actions={},  # No ground truth actions during inference
-            text=observation["language"][self.language_key][0],
+            # text=observation["language"][self.language_key][0],
+            text="put the fruits in the bag",
             embodiment=self.embodiment_tag,
         )
 
