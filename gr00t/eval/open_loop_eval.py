@@ -16,6 +16,9 @@ from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 import tyro
+from gr00t.data.types import (
+    ModalityConfig,
+)
 
 
 warnings.simplefilter("ignore", category=FutureWarning)
@@ -164,6 +167,16 @@ def evaluate_single_trajectory(
 
     modality_configs = deepcopy(loader.modality_configs)
     modality_configs.pop("action")
+    # TODO: tmp hardcode
+    modality_configs["language"] = ModalityConfig(
+        delta_indices=[0],
+        modality_keys=[f'task'],
+    )
+    loader.modality_configs["language"] = ModalityConfig(
+        delta_indices=[0],
+        modality_keys=[f'task'],
+    )
+
     for step_count in range(0, actual_steps, action_horizon):
         data_point = extract_step_data(traj, step_count, modality_configs, embodiment_tag)
         logging.info(f"inferencing at step: {step_count}")

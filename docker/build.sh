@@ -56,7 +56,7 @@ elif [ "$profile" = "orin" ]; then
         && echo "Image $image_name BUILT SUCCESSFULLY"
 else
     image_name="gr00t-dev"
-    docker build "${docker_args[@]}" \
+    sudo docker build "${docker_args[@]}" \
         --platform linux/amd64 \
         --network host \
         -t "$image_name" "$DIR" \
