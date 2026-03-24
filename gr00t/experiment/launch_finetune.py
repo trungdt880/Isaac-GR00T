@@ -38,17 +38,20 @@ if __name__ == "__main__":
     if ft_config.modality_config_path is not None:
         load_modality_config(ft_config.modality_config_path)
 
+    dataset_spec = {
+        "dataset_paths": [ft_config.dataset_path],
+        "mix_ratio": 1.0,
+        "embodiment_tag": embodiment_tag,
+        "episode_indices": ft_config.episode_indices,
+    }
+    if ft_config.episode_indices is not None:
+        dataset_spec["episode_indices"] = ft_config.eval_episode_indices
+
     config = get_default_config().load_dict(
         {
             "data": {
                 "download_cache": False,
-                "datasets": [
-                    {
-                        "dataset_paths": [ft_config.dataset_path],
-                        "mix_ratio": 1.0,
-                        "embodiment_tag": embodiment_tag,
-                    }
-                ],
+                "datasets": [dataset_spec],
             }
         }
     )

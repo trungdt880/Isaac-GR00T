@@ -32,6 +32,41 @@ NOTE: provide --model_path to load up the model checkpoint in this script,
 """
 
 
+def smooth_actions(actions: np.ndarray, sigma: float) -> np.ndarray:
+    """Apply 1-D Gaussian smoothing independently to each action dimension."""
+    from scipy.ndimage import gaussian_filter1d
+    return gaussian_filter1d(actions, sigma=sigma, axis=0)
+
+
+def temporal_ensemble(
+    all_chunks: list[tuple[int, np.ndarray]],
+    total_steps: int,
+    action_dim: int,
+    exp_weight: float = 0.0,
+) -> np.ndarray:
+    """Blend overlapping action chunks using (optionally exponential) averaging.
+
+    Args:
+        all_chunks: list of (start_step, chunk_array) pairs.  chunk shape: (chunk_len, action_dim).
+        total_steps: total number of timesteps to produce.
+        action_dim: action dimensionality.
+        exp_weight: if >0, newer chunks are weighted by exp(-exp_weight * age).
+                    if 0, simple uniform average.
+    """
+    accum = np.zeros((total_steps, action_dim), dtype=np.float64)
+    weights = np.zeros((total_steps, 1), dtype=np.float64)
+
+    for start, chunk in all_chunks:
+        chunk_len = min(len(chunk), total_steps - start)
+        for j in range(chunk_len):
+            w = np.exp(-exp_weight * j) if exp_weight > 0 else 1.0
+            accum[start + j] += w * chunk[j, :action_dim]
+            weights[start + j] += w
+
+    weights = np.maximum(weights, 1e-8)
+    return (accum / weights).astype(np.float32)
+
+
 def plot_trajectory_results(
     state_joints_across_time: np.ndarray,
     gt_action_across_time: np.ndarray,
@@ -147,8 +182,12 @@ def evaluate_single_trajectory(
     modality_keys: list[str] | None = None,
     steps=300,
     action_horizon=16,
+    replan_steps: int | None = None,
+    smooth_sigma: float = 0.0,
     save_plot_path=None,
 ):
+    replan = replan_steps or action_horizon
+
     # Ensure steps doesn't exceed trajectory length
     traj = loader[traj_id]
     traj_length = len(traj)
@@ -156,8 +195,6 @@ def evaluate_single_trajectory(
     logging.info(
         f"Using {actual_steps} steps (requested: {steps}, trajectory length: {traj_length})"
     )
-
-    pred_action_across_time = []
 
     # Extract state and action keys separately and sort for consistent order
     state_keys = loader.modality_configs["state"].modality_keys
@@ -177,7 +214,11 @@ def evaluate_single_trajectory(
         modality_keys=[f'task'],
     )
 
-    for step_count in range(0, actual_steps, action_horizon):
+    use_ensemble = replan < action_horizon
+    all_chunks: list[tuple[int, np.ndarray]] = []
+    pred_action_across_time: list[np.ndarray] = []
+
+    for step_count in range(0, actual_steps, replan):
         data_point = extract_step_data(traj, step_count, modality_configs, embodiment_tag)
         logging.info(f"inferencing at step: {step_count}")
         obs = {}
@@ -190,9 +231,9 @@ def evaluate_single_trajectory(
         parsed_obs = parse_observation_gr00t(obs, loader.modality_configs)
         _action_chunk, _ = policy.get_action(parsed_obs)
         action_chunk = parse_action_gr00t(_action_chunk)
+
+        chunk_actions = []
         for j in range(action_horizon):
-            # NOTE: concat_pred_action = action[f"action.{modality_keys[0]}"][j]
-            # the np.atleast_1d is to ensure the action is a 1D array, handle where single value is returned
             concat_pred_action = np.concatenate(
                 [
                     np.atleast_1d(np.atleast_1d(action_chunk[f"action.{key}"])[j])
@@ -200,7 +241,15 @@ def evaluate_single_trajectory(
                 ],
                 axis=0,
             )
-            pred_action_across_time.append(concat_pred_action)
+            chunk_actions.append(concat_pred_action)
+        chunk_array = np.stack(chunk_actions)
+
+        if use_ensemble:
+            all_chunks.append((step_count, chunk_array))
+        else:
+            end = min(step_count + replan, actual_steps)
+            for j in range(end - step_count):
+                pred_action_across_time.append(chunk_array[j] if j < len(chunk_array) else chunk_array[-1])
 
     def extract_state_joints(traj: pd.DataFrame, columns: list[str]):
         np_dict = {}
@@ -213,32 +262,61 @@ def evaluate_single_trajectory(
     gt_action_across_time = extract_state_joints(traj, [f"action.{key}" for key in action_keys])[
         :actual_steps
     ]
-    pred_action_across_time = np.array(pred_action_across_time)[:actual_steps]
-    assert gt_action_across_time.shape == pred_action_across_time.shape, (
-        f"gt_action: {gt_action_across_time.shape}, pred_action: {pred_action_across_time.shape}"
+
+    action_dim = gt_action_across_time.shape[1]
+    if use_ensemble:
+        pred_action_across_time_arr = temporal_ensemble(all_chunks, actual_steps, action_dim)
+    else:
+        pred_action_across_time_arr = np.array(pred_action_across_time)[:actual_steps]
+
+    if smooth_sigma > 0:
+        logging.info(f"Applying Gaussian smoothing (sigma={smooth_sigma})")
+        pred_action_across_time_arr = smooth_actions(pred_action_across_time_arr, smooth_sigma)
+
+    assert gt_action_across_time.shape == pred_action_across_time_arr.shape, (
+        f"gt_action: {gt_action_across_time.shape}, pred_action: {pred_action_across_time_arr.shape}"
     )
 
     # calc MSE and MAE across time
-    mse = np.mean((gt_action_across_time - pred_action_across_time) ** 2)
-    mae = np.mean(np.abs(gt_action_across_time - pred_action_across_time))
+    mse = np.mean((gt_action_across_time - pred_action_across_time_arr) ** 2)
+    mae = np.mean(np.abs(gt_action_across_time - pred_action_across_time_arr))
     logging.info(f"Unnormalized Action MSE across single traj: {mse}")
     logging.info(f"Unnormalized Action MAE across single traj: {mae}")
 
     logging.info(f"state_joints vs time {state_joints_across_time.shape}")
     logging.info(f"gt_action_joints vs time {gt_action_across_time.shape}")
-    logging.info(f"pred_action_joints vs time {pred_action_across_time.shape}")
+    logging.info(f"pred_action_joints vs time {pred_action_across_time_arr.shape}")
 
     # Plot trajectory results
+    resolved_plot_path = save_plot_path or f"/tmp/open_loop_eval/traj_{traj_id}.jpeg"
     plot_trajectory_results(
         state_joints_across_time=state_joints_across_time,
         gt_action_across_time=gt_action_across_time,
-        pred_action_across_time=pred_action_across_time,
+        pred_action_across_time=pred_action_across_time_arr,
         traj_id=traj_id,
         state_keys=state_keys,
         action_keys=action_keys,
         action_horizon=action_horizon,
-        save_plot_path=save_plot_path or f"/tmp/open_loop_eval/traj_{traj_id}.jpeg",
+        save_plot_path=resolved_plot_path,
     )
+
+    # Save actions as .npz for downstream visualization (e.g. viser 3D viz)
+    npz_path = str(Path(resolved_plot_path).with_suffix(".npz"))
+    Path(npz_path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        npz_path,
+        pred_action=pred_action_across_time_arr,
+        gt_action=gt_action_across_time,
+        state_joints=state_joints_across_time,
+        action_keys=np.array(action_keys),
+        state_keys=np.array(state_keys),
+    )
+    logging.info(f"Saved actions to {npz_path}")
+
+    txt_path = str(Path(resolved_plot_path).with_suffix(".txt"))
+    with open(txt_path, "w") as f:
+        f.write(f"MSE: {mse}\n")
+        f.write(f"MAE: {mae}\n")
 
     return mse, mae
 
@@ -279,6 +357,15 @@ class ArgsConfig:
 
     modality_keys: list[str] | None = None
     """List of modality keys to plot. If None, plot all keys."""
+
+    replan_steps: int | None = None
+    """Receding-horizon: only use first K actions per chunk, then re-infer.
+    If K < action_horizon, overlapping chunks are blended via temporal ensembling.
+    Defaults to action_horizon (no replanning)."""
+
+    smooth_sigma: float = 0.0
+    """Gaussian smoothing sigma applied to the final predicted trajectory.
+    0 = disabled. Try 1.0-3.0 to remove chunk-boundary jitter."""
 
 
 def main(args: ArgsConfig):
@@ -339,6 +426,16 @@ def main(args: ArgsConfig):
             continue
 
         logging.info(f"Running trajectory: {traj_id}")
+        if args.save_plot_path is not None:
+            plot_path = Path(args.save_plot_path)
+            if plot_path.is_file():
+                logging.info(f"Plot path {plot_path} should be a folder, use parent folder instead")
+                plot_path = plot_path.parent
+            model_name = Path(args.model_path).name
+            plot_path = plot_path / Path(args.model_path).parent.name /  f"traj_{traj_id}_{model_name}.jpeg"
+            plot_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # policy.model.action_head.num_inference_timesteps = 16
         mse, mae = evaluate_single_trajectory(
             policy,
             dataset,
@@ -347,7 +444,9 @@ def main(args: ArgsConfig):
             args.modality_keys,
             steps=args.steps,
             action_horizon=args.action_horizon,
-            save_plot_path=args.save_plot_path,
+            replan_steps=args.replan_steps,
+            smooth_sigma=args.smooth_sigma,
+            save_plot_path=plot_path,
         )
         logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}")
         all_mse.append(mse)

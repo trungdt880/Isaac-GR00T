@@ -25,6 +25,9 @@ class FinetuneConfig:
     embodiment_tag: EmbodimentTag
     """Identifier specifying which embodiment (robot configuration) this fine-tuning run targets."""
 
+    episode_indices: list[int] | None = None
+    """List of episode indices to include. If None, all episodes are used."""
+
     modality_config_path: str | None = None
     """
     Path to a Python file defining the modality configuration for the given embodiment. 

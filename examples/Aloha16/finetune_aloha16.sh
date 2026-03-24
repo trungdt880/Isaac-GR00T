@@ -2,9 +2,9 @@ set -x -euo pipefail
 
 export NUM_GPUS=8
 SAVE_STEPS="${SAVE_STEPS:-1000}"
-MAX_STEPS="${MAX_STEPS:-10000}"
+MAX_STEPS="${MAX_STEPS:-30000}"
 USE_WANDB="${USE_WANDB:-1}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-16}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-1024}"
 SHARD_SIZE="${SHARD_SIZE:-1024}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
@@ -22,11 +22,11 @@ export WANDB_API_KEY=wandb_v1_HvtT3n5lsSrfMzjlIkh21Qd7CZS_yQdGSiyIbAyegOFjmvKMG0
 torchrun --nproc_per_node=$NUM_GPUS --master_port=29500 \
     gr00t/experiment/launch_finetune.py \
     --base_model_path nvidia/GR00T-N1.6-3B \
-    --dataset_path /root/.cache/huggingface/lerobot/uiuc-fruit-bag-oculus-50eps \
+    --dataset_path /root/.cache/huggingface/lerobot/uiuc-fruit-bag-oculus-full-30fps \
     --modality_config_path examples/Aloha16/aloha16_config.py \
     --embodiment_tag NEW_EMBODIMENT \
     --num_gpus $NUM_GPUS \
-    --output_dir /Data2/trungdt/tmp/aloha16_finetune50_bigger \
+    --output_dir /Data2/trungdt/tmp/full \
     --save_steps "$SAVE_STEPS" \
     --save_total_limit 1 \
     --max_steps "$MAX_STEPS" \

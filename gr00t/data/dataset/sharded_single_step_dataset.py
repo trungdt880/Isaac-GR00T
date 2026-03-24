@@ -98,6 +98,10 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: Fraction of episode timesteps to use (for efficiency)
         seed: Random seed for reproducible sharding and sampling
         allow_padding: Whether to allow padding of indices to valid range [0, max_length - 1]
+        episode_indices: Optional list of episode indices to include. If None, all
+            episodes are used. Supports negative indices (e.g., [-1] for the last
+            episode). Useful for overfitting on specific episodes or creating
+            train/val splits.
 
     Example:
         >>> dataset = ShardedSingleStepDataset(
@@ -127,6 +131,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: float = 0.1,
         seed: int = 42,
         allow_padding: bool = False,
+        episode_indices: list[int] | None = None,
     ):
         """Initialize single-step dataset with sharding configuration."""
         super().__init__(dataset_path)
@@ -150,6 +155,17 @@ class ShardedSingleStepDataset(ShardedDataset):
             video_backend_kwargs=video_backend_kwargs,
         )
 
+        num_total_episodes = len(self.episode_loader.episode_lengths)
+        if episode_indices is not None:
+            self.episode_indices = sorted(set(
+                idx % num_total_episodes for idx in episode_indices
+            ))
+        else:
+            self.episode_indices = list(range(num_total_episodes))
+        print(
+            f"Dataset {self.dataset_path}: using {len(self.episode_indices)}/{num_total_episodes} episodes"
+        )
+
         # Create balanced shards from episode timesteps
         self.shard_dataset()
 
@@ -168,7 +184,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         - Diversity within shards (mix of episodes and timesteps)
         - Reproducible sharding based on seed
         """
-        shuffled_episode_indices = self.rng.permutation(len(self.episode_loader.episode_lengths))
+        shuffled_episode_indices = self.rng.permutation(self.episode_indices)
         num_splits = int(1 / self.episode_sampling_rate)
 
         assert len(shuffled_episode_indices) > 0, (
@@ -179,7 +195,11 @@ class ShardedSingleStepDataset(ShardedDataset):
         total_steps = np.sum(
             [self.get_effective_episode_length(idx) for idx in shuffled_episode_indices]
         ).astype(int)
-        num_shards = np.ceil(total_steps / self.shard_size).astype(int)
+        num_chunks = len(shuffled_episode_indices) * num_splits
+        num_shards = min(
+            np.ceil(total_steps / self.shard_size).astype(int),
+            max(1, num_chunks),
+        )
 
         # Initialize shard containers
         sharded_episodes = [[] for _ in range(num_shards)]

@@ -31,6 +31,11 @@ class SingleDatasetConfig:
     # If not provided, falls back to dataset_paths for evaluation
     val_dataset_path: Optional[str] = None
 
+    # Optional list of episode indices to include (e.g. [0] for single-episode
+    # overfitting, or list(range(90)) to use first 90 episodes for training).
+    # Negative indices are supported. None means use all episodes.
+    episode_indices: Optional[List[int]] = None
+
 
 @dataclass
 class DataConfig:
